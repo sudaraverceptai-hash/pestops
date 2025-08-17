@@ -1,0 +1,302 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserId() {
+      return request.auth.uid;
+    }
+    
+    function getCustomClaims() {
+      return request.auth.token;
+    }
+    
+    function belongsToOrg(orgId) {
+      return isAuthenticated() && 
+             getCustomClaims().orgIds != null &&
+             orgId in getCustomClaims().orgIds;
+    }
+    
+    function hasRole(orgId, role) {
+      return belongsToOrg(orgId) && 
+             getCustomClaims().roles != null &&
+             getCustomClaims().roles[orgId] == role;
+    }
+    
+    function hasAnyRole(orgId, roles) {
+      return belongsToOrg(orgId) && 
+             getCustomClaims().roles != null &&
+             getCustomClaims().roles[orgId] in roles;
+    }
+    
+    function hasPermission(orgId, permission) {
+      return belongsToOrg(orgId) && 
+             getCustomClaims().permissions != null &&
+             (getCustomClaims().permissions[orgId] != null &&
+              (permission in getCustomClaims().permissions[orgId] ||
+               '*' in getCustomClaims().permissions[orgId]));
+    }
+    
+    function isOwner(orgId) {
+      return hasRole(orgId, 'Owner');
+    }
+    
+    function isAdminOrOwner(orgId) {
+      return hasAnyRole(orgId, ['Owner', 'Admin']);
+    }
+    
+    function isManagerOrAbove(orgId) {
+      return hasAnyRole(orgId, ['Owner', 'Admin', 'Manager']);
+    }
+    
+    function canRead(orgId, resource) {
+      return hasPermission(orgId, resource + ':read');
+    }
+    
+    function canWrite(orgId, resource) {
+      return hasPermission(orgId, resource + ':write');
+    }
+    
+    function canDelete(orgId, resource) {
+      return hasPermission(orgId, resource + ':delete');
+    }
+    
+    function isValidOrgId(orgId) {
+      return orgId is string && orgId.size() > 0;
+    }
+    
+    function hasRequiredFields(data, fields) {
+      return fields.hasAll(data.keys());
+    }
+    
+    // Organizations collection
+    match /organizations/{orgId} {
+      allow read: if belongsToOrg(orgId);
+      allow create: if isAuthenticated() && 
+                       isValidOrgId(orgId) &&
+                       resource.data.createdBy == getUserId();
+      allow update: if isOwner(orgId);
+      allow delete: if isOwner(orgId);
+    }
+    
+    // Users collection (profile documents)
+    match /users/{userId} {
+      allow read: if isAuthenticated() && 
+                     (userId == getUserId() || 
+                      exists(/databases/$(database)/documents/memberships/$(getUserId() + '_' + resource.data.orgIds[0])));
+      allow create: if isAuthenticated() && userId == getUserId();
+      allow update: if isAuthenticated() && 
+                       (userId == getUserId() || 
+                        hasPermission(resource.data.orgIds[0], 'users:write'));
+      allow delete: if hasPermission(resource.data.orgIds[0], 'users:delete');
+    }
+    
+    // Memberships collection
+    match /memberships/{membershipId} {
+      allow read: if isAuthenticated() && 
+                     (resource.data.userId == getUserId() || 
+                      canRead(resource.data.orgId, 'users'));
+      allow create: if isAuthenticated() && 
+                       (resource.data.userId == getUserId() || 
+                        canWrite(resource.data.orgId, 'users'));
+      allow update: if canWrite(resource.data.orgId, 'users');
+      allow delete: if canDelete(resource.data.orgId, 'users');
+    }
+    
+    // Customers collection
+    match /customers/{customerId} {
+      allow read: if canRead(resource.data.orgId, 'customers');
+      allow create: if canWrite(resource.data.orgId, 'customers') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'customers');
+      allow delete: if canDelete(resource.data.orgId, 'customers');
+    }
+    
+    // Sites collection
+    match /sites/{siteId} {
+      allow read: if canRead(resource.data.orgId, 'sites');
+      allow create: if canWrite(resource.data.orgId, 'sites') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'sites');
+      allow delete: if canDelete(resource.data.orgId, 'sites');
+    }
+    
+    // Leads collection
+    match /leads/{leadId} {
+      allow read: if canRead(resource.data.orgId, 'leads');
+      allow create: if canWrite(resource.data.orgId, 'leads') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'leads');
+      allow delete: if canDelete(resource.data.orgId, 'leads');
+    }
+    
+    // Jobs collection
+    match /jobs/{jobId} {
+      allow read: if canRead(resource.data.orgId, 'jobs') ||
+                     (hasRole(resource.data.orgId, 'Tech') && 
+                      getUserId() in resource.data.assignedTo);
+      allow create: if canWrite(resource.data.orgId, 'jobs') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'jobs') ||
+                       (hasRole(resource.data.orgId, 'Tech') && 
+                        getUserId() in resource.data.assignedTo);
+      allow delete: if canDelete(resource.data.orgId, 'jobs');
+    }
+    
+    // Service Plans collection
+    match /servicePlans/{planId} {
+      allow read: if canRead(resource.data.orgId, 'jobs');
+      allow create: if canWrite(resource.data.orgId, 'jobs') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'jobs');
+      allow delete: if canDelete(resource.data.orgId, 'jobs');
+    }
+    
+    // Proposals collection
+    match /proposals/{proposalId} {
+      allow read: if canRead(resource.data.orgId, 'proposals');
+      allow create: if canWrite(resource.data.orgId, 'proposals') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'proposals');
+      allow delete: if canDelete(resource.data.orgId, 'proposals');
+    }
+    
+    // Invoices collection
+    match /invoices/{invoiceId} {
+      allow read: if canRead(resource.data.orgId, 'invoices');
+      allow create: if canWrite(resource.data.orgId, 'invoices') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'invoices');
+      allow delete: if canDelete(resource.data.orgId, 'invoices');
+    }
+    
+    // Payments collection
+    match /payments/{paymentId} {
+      allow read: if canRead(resource.data.orgId, 'payments');
+      allow create: if canWrite(resource.data.orgId, 'payments') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'payments');
+      allow delete: if false; // Payments should not be deleted
+    }
+    
+    // Inventory Items collection
+    match /inventoryItems/{itemId} {
+      allow read: if canRead(resource.data.orgId, 'inventory');
+      allow create: if canWrite(resource.data.orgId, 'inventory') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'inventory');
+      allow delete: if canDelete(resource.data.orgId, 'inventory');
+    }
+    
+    // Inventory Locations collection
+    match /inventoryLocations/{locationId} {
+      allow read: if canRead(resource.data.orgId, 'inventory');
+      allow create: if canWrite(resource.data.orgId, 'inventory') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'inventory');
+      allow delete: if canDelete(resource.data.orgId, 'inventory');
+    }
+    
+    // Inventory Transactions collection
+    match /inventoryTransactions/{transactionId} {
+      allow read: if canRead(resource.data.orgId, 'inventory');
+      allow create: if canWrite(resource.data.orgId, 'inventory') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if false; // Transactions should not be updated
+      allow delete: if false; // Transactions should not be deleted
+    }
+    
+    // Chemicals collection
+    match /chemicals/{chemicalId} {
+      allow read: if canRead(resource.data.orgId, 'chemicals');
+      allow create: if canWrite(resource.data.orgId, 'chemicals') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'chemicals');
+      allow delete: if canDelete(resource.data.orgId, 'chemicals');
+    }
+    
+    // Chemical Usage Logs collection
+    match /chemicalUsageLogs/{logId} {
+      allow read: if canRead(resource.data.orgId, 'chemicals');
+      allow create: if canWrite(resource.data.orgId, 'chemicals') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'chemicals');
+      allow delete: if false; // Usage logs should not be deleted for compliance
+    }
+    
+    // Tasks collection
+    match /tasks/{taskId} {
+      allow read: if canRead(resource.data.orgId, 'tasks') ||
+                     resource.data.assigneeId == getUserId();
+      allow create: if canWrite(resource.data.orgId, 'tasks') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'tasks') ||
+                       resource.data.assigneeId == getUserId();
+      allow delete: if canDelete(resource.data.orgId, 'tasks');
+    }
+    
+    // Messages collection
+    match /messages/{messageId} {
+      allow read: if belongsToOrg(resource.data.orgId);
+      allow create: if belongsToOrg(resource.data.orgId) &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if belongsToOrg(resource.data.orgId);
+      allow delete: if false; // Messages should not be deleted for audit trail
+    }
+    
+    // Vehicles collection
+    match /vehicles/{vehicleId} {
+      allow read: if canRead(resource.data.orgId, 'vehicles');
+      allow create: if canWrite(resource.data.orgId, 'vehicles') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'vehicles');
+      allow delete: if canDelete(resource.data.orgId, 'vehicles');
+    }
+    
+    // Stations collection
+    match /stations/{stationId} {
+      allow read: if canRead(resource.data.orgId, 'stations');
+      allow create: if canWrite(resource.data.orgId, 'stations') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'stations');
+      allow delete: if canDelete(resource.data.orgId, 'stations');
+    }
+    
+    // Station Readings collection
+    match /stationReadings/{readingId} {
+      allow read: if canRead(resource.data.orgId, 'stations');
+      allow create: if canWrite(resource.data.orgId, 'stations') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'stations');
+      allow delete: if false; // Readings should not be deleted for audit trail
+    }
+    
+    // Settings collection
+    match /settings/{settingId} {
+      allow read: if canRead(resource.data.orgId, 'settings');
+      allow create: if canWrite(resource.data.orgId, 'settings') &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if canWrite(resource.data.orgId, 'settings');
+      allow delete: if false; // Settings should not be deleted
+    }
+    
+    // Activity Logs collection
+    match /activityLogs/{logId} {
+      allow read: if belongsToOrg(resource.data.orgId) &&
+                     (isManagerOrAbove(resource.data.orgId) ||
+                      resource.data.actorId == getUserId());
+      allow create: if belongsToOrg(resource.data.orgId) &&
+                       isValidOrgId(resource.data.orgId);
+      allow update: if false; // Activity logs should not be updated
+      allow delete: if false; // Activity logs should not be deleted
+    }
+    
+    // Default deny all other documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
